@@ -1,0 +1,20 @@
+# Modelli AI (pesanti: scaricati da Hugging Face dal notebook)
+*.pt
+
+# Video di input e output (pesanti, non vanno nel repo)
+clips_input/
+output/
+*.mp4
+*.mkv
+*.webm
+
+# File temporanei / generati
+__pycache__/
+*.pyc
+vista_tattica/calibrazioni/
+vista_tattica/figure-keypoints.png
+vista_tattica/_*.py
+
+# Sistema
+.DS_Store
+Thumbs.db
