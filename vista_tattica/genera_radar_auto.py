@@ -21,6 +21,7 @@ import os
 import sys
 import csv
 import argparse
+from collections import Counter
 import numpy as np
 import cv2
 
@@ -43,12 +44,20 @@ KP_REALI = np.array(cc.KEYPOINTS_32, dtype=np.float32)
 
 
 def colore_maglia(frame, box):
+    """Colore medio della maglia (busto), robusto: ritaglio stretto, niente erba, mediana."""
     x1, y1, x2, y2 = map(int, box)
-    h = y2 - y1
-    crop = frame[max(0, y1+int(0.15*h)):max(0, y1+int(0.45*h)), max(0, x1):max(0, x2)]
+    h, w = y2 - y1, x2 - x1
+    cx1, cx2 = x1 + int(0.2*w), x2 - int(0.2*w)     # restringe lateralmente (no sfondo)
+    cy1, cy2 = y1 + int(0.15*h), y1 + int(0.45*h)   # fascia busto
+    crop = frame[max(0, cy1):max(0, cy2), max(0, cx1):max(0, cx2)]
     if crop.size == 0:
-        return np.array([0, 0, 0])
-    return crop.reshape(-1, 3).mean(axis=0)
+        return np.array([0, 0, 0], dtype=np.float32)
+    px = crop.reshape(-1, 3).astype(np.float32)
+    b, g, r = px[:, 0], px[:, 1], px[:, 2]
+    non_erba = ~((g > b * 1.1) & (g > r * 1.1))      # scarta i pixel verdi (campo)
+    if non_erba.sum() > 5:
+        px = px[non_erba]
+    return np.median(px, axis=0)
 
 
 def piedi(box):
@@ -70,39 +79,75 @@ def proietta_in_campo(box, H, margine=25.0):
 
 class TrackerMetrico:
     """Tracking dei giocatori nelle coordinate del CAMPO (metri).
-    Robusto alla camera in movimento: associa ogni rilevazione alla traccia
-    più vicina sul campo reale."""
-    def __init__(self, max_dist=5.0, max_miss=6):
-        self.max_dist = max_dist
-        self.max_miss = max_miss
-        self.tracce = {}     # id -> [x, y, ultimo_frame]
+    - associa con PREVISIONE del movimento (la traccia ricorda la velocità)
+    - tollera sparizioni temporanee (riaggancia invece di creare nuovi ID)
+    - squadra stabile per traccia (voto di maggioranza, niente sfarfallio)
+    """
+    def __init__(self, max_dist=4.0, max_miss=30):
+        self.max_dist = max_dist     # gate base (metri)
+        self.max_miss = max_miss     # frame analizzati di tolleranza assenza
+        self.tracce = {}             # id -> dict(x,y,vx,vy,last,team,voti)
         self.next_id = 1
         self.frame = 0
 
-    def update(self, posizioni):
-        """posizioni: lista di (x,y) in metri o None. Ritorna lista di id (o None)."""
+    def update(self, rilevazioni):
+        """rilevazioni: lista di ((x,y), squadra). Ritorna lista di id."""
         self.frame += 1
-        ids = [None] * len(posizioni)
-        usate = set()
-        for i, p in enumerate(posizioni):
-            if p is None:
+        ids = [None] * len(rilevazioni)
+        validi = [(i, p, t) for i, (p, t) in enumerate(rilevazioni) if p is not None]
+
+        # costruisci tutte le coppie compatibili (rilevazione, traccia)
+        coppie = []
+        for i, p, t in validi:
+            for tid, tr in self.tracce.items():
+                dt = self.frame - tr["last"]
+                dtp = min(dt, 5)                          # previsione max 5 frame avanti
+                px = tr["x"] + tr["vx"] * dtp
+                py = tr["y"] + tr["vy"] * dtp
+                d = ((p[0]-px)**2 + (p[1]-py)**2) ** 0.5
+                gate = min(self.max_dist + 1.0 * dt, 12.0)  # più tolleranza dopo gap lunghi
+                if d <= gate:
+                    pen = 0.0 if (t is None or tr["team"] == t) else 2.5  # preferisci stessa squadra
+                    coppie.append((d + pen, i, tid))
+        coppie.sort()
+
+        assegn, usate = {}, set()
+        for _, i, tid in coppie:
+            if i in assegn or tid in usate:
                 continue
-            best, bestd = None, self.max_dist
-            for tid, (tx, ty, lf) in self.tracce.items():
-                if tid in usate:
-                    continue
-                d = (p[0]-tx)**2 + (p[1]-ty)**2
-                if d < bestd**2:
-                    bestd, best = d**0.5, tid
-            if best is None:
-                best = self.next_id
+            assegn[i] = tid
+            usate.add(tid)
+
+        for i, p, t in validi:
+            if i in assegn:
+                tid = assegn[i]
+                tr = self.tracce[tid]
+                dt = max(1, self.frame - tr["last"])
+                tr["vx"] = 0.6 * tr["vx"] + 0.4 * ((p[0]-tr["x"]) / dt)
+                tr["vy"] = 0.6 * tr["vy"] + 0.4 * ((p[1]-tr["y"]) / dt)
+                tr["x"], tr["y"] = p
+                tr["last"] = self.frame
+                if t is not None:                        # vota solo squadre note (no calibrazione)
+                    tr["voti"][t] += 1
+                    tr["team"] = tr["voti"].most_common(1)[0][0]
+                ids[i] = tid
+            else:
+                tid = self.next_id
                 self.next_id += 1
-            self.tracce[best] = [p[0], p[1], self.frame]
-            usate.add(best)
-            ids[i] = best
-        self.tracce = {t: v for t, v in self.tracce.items()
-                       if self.frame - v[2] <= self.max_miss}
+                voti = Counter({t: 1}) if t is not None else Counter()
+                self.tracce[tid] = {"x": p[0], "y": p[1], "vx": 0.0, "vy": 0.0,
+                                    "last": self.frame, "team": (t if t is not None else 0),
+                                    "voti": voti}
+                ids[i] = tid
+
+        self.tracce = {tid: tr for tid, tr in self.tracce.items()
+                       if self.frame - tr["last"] <= self.max_miss}
         return ids
+
+    def squadra(self, tid):
+        """Squadra stabile della traccia (voto di maggioranza)."""
+        tr = self.tracce.get(tid)
+        return tr["team"] if tr else 0
 
 
 class GestoreSquadre:
@@ -189,7 +234,8 @@ def main():
     csv_w = csv.writer(csv_f)
     csv_w.writerow(["frame", "tempo_s", "id_giocatore", "squadra", "x_m", "y_m"])
 
-    tracker = TrackerMetrico(max_dist=5.0, max_miss=6)
+    # tolleranza assenza ~2.5 s (adattata al frame-rate effettivo dopo il salto)
+    tracker = TrackerMetrico(max_dist=4.0, max_miss=max(8, int(out_fps * 2.5)))
     gestore = GestoreSquadre()
     CALIB = 30
     n_ok_campo = 0
@@ -254,7 +300,8 @@ def main():
             sq = gestore.classifica_forzata(colore_maglia(frame, box)) if gestore.pronto() else 0
             info_giocatori.append((box, sq, pos))
             posizioni.append(pos)
-        ids = tracker.update(posizioni)
+        pronto = gestore.pronto()
+        ids = tracker.update([(pos, sq if pronto else None) for (box, sq, pos) in info_giocatori])
 
         vista = frame.copy()
         radar = mappa_vuota.copy()
@@ -269,16 +316,20 @@ def main():
                 p = cv2.perspectiveTransform(piedi(box), H).reshape(2)
                 if 0 <= p[0] <= cc.LUNGHEZZA and 0 <= p[1] <= cc.LARGHEZZA:
                     cv2.circle(radar, cc.metri_a_pixel(*p), 5, COL_PALLA, -1)
+                    # palla salvata nel CSV: id_giocatore=0, squadra=0
+                    csv_w.writerow([idx, f"{tempo:.2f}", 0, 0, f"{p[0]:.2f}", f"{p[1]:.2f}"])
+                    break   # una sola palla per frame
 
         for (box, sq, pos), tid in zip(info_giocatori, ids):
-            colore = COL_SQUADRA[sq]
+            squadra = tracker.squadra(tid) if tid is not None else sq  # stabile (voto maggioranza)
+            colore = COL_SQUADRA[squadra]
             cx, cy = int((box[0]+box[2])/2), int(box[3])
             cv2.ellipse(vista, (cx, cy), (16, 7), 0, 0, 360, colore, 2)
             if pos is not None:
                 cv2.circle(radar, cc.metri_a_pixel(*pos), 6, colore, -1)
                 cv2.circle(radar, cc.metri_a_pixel(*pos), 6, (0, 0, 0), 1)
                 if tid is not None:
-                    csv_w.writerow([idx, f"{tempo:.2f}", int(tid), sq+1,
+                    csv_w.writerow([idx, f"{tempo:.2f}", int(tid), squadra+1,
                                     f"{pos[0]:.2f}", f"{pos[1]:.2f}"])
 
         # arbitri (colore neutro, non in squadra, non nel CSV)

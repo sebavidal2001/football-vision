@@ -23,6 +23,7 @@ OUTPUT = os.path.join(BASE, "output")
 RADAR = os.path.join(BASE, "vista_tattica", "genera_radar_auto.py")
 STATS = os.path.join(BASE, "analisi", "stats_giocatori.py")
 DASH = os.path.join(BASE, "analisi", "confronto_giocatori.py")
+METRICHE = os.path.join(BASE, "analisi", "metriche_avanzate.py")
 
 
 class App:
@@ -97,14 +98,17 @@ class App:
             self.root.after(0, self.scrivi, "\n▶ FASE 2/3 — Heatmap e statistiche per giocatore...")
             self._run([sys.executable, STATS, csv_pos, "--min_rilevazioni", self.minr.get()])
             stats_csv = os.path.join(OUTPUT, f"STATISTICHE_{base}.csv")
-            self.root.after(0, self.scrivi, "\n▶ FASE 3/3 — Dashboard di confronto giocatori...")
+            self.root.after(0, self.scrivi, "\n▶ FASE 3/4 — Dashboard di confronto giocatori...")
             if os.path.exists(stats_csv):
                 self._run([sys.executable, DASH, stats_csv])
+            self.root.after(0, self.scrivi, "\n▶ FASE 4/4 — Metriche scouting (atletiche + tattiche)...")
+            self._run([sys.executable, METRICHE, csv_pos, "--min_rilevazioni", self.minr.get()])
             self.root.after(0, self.scrivi, "\n✅ FATTO! Risultati nella cartella 'output':")
-            self.root.after(0, self.scrivi, f"   • Video radar: RADARAUTO_{base}.mp4")
-            self.root.after(0, self.scrivi, f"   • Heatmap:     heatmaps_{base}/")
-            self.root.after(0, self.scrivi, f"   • Statistiche: STATISTICHE_{base}.csv")
-            self.root.after(0, self.scrivi, f"   • Dashboard:   DASHBOARD_{base}.png")
+            self.root.after(0, self.scrivi, f"   • Video radar:  RADARAUTO_{base}.mp4")
+            self.root.after(0, self.scrivi, f"   • Heatmap:      heatmaps_{base}/")
+            self.root.after(0, self.scrivi, f"   • Dashboard:    DASHBOARD_{base}.png")
+            self.root.after(0, self.scrivi, f"   • Report scout: REPORT_{base}.png")
+            self.root.after(0, self.scrivi, f"   • Dati: STATISTICHE / METRICHE_GIOCATORI / METRICHE_SQUADRE .csv")
             try:
                 os.startfile(OUTPUT)
             except Exception:
