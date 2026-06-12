@@ -208,6 +208,8 @@ def main():
     ap.add_argument("--ogni_campo", type=int, default=1,
                     help="riconosci il campo ogni N frame analizzati (>1 = più veloce su clip lunghe)")
     ap.add_argument("--modello_giocatori", default=MODELLO_GIOCATORI)
+    ap.add_argument("--no_video", action="store_true",
+                    help="non salvare il video radar (più veloce, file leggero: per partite intere)")
     args = ap.parse_args()
 
     from ultralytics import YOLO
@@ -227,8 +229,8 @@ def main():
     out_fps = max(1, info.fps // args.salto)
     base = os.path.splitext(os.path.basename(args.video))[0]
     out_path = os.path.join(OUTPUT_DIR, "RADARAUTO_" + base + ".mp4")
-    writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"),
-                             out_fps, (info.width + radar_w, info.height))
+    writer = None if args.no_video else cv2.VideoWriter(
+        out_path, cv2.VideoWriter_fourcc(*"mp4v"), out_fps, (info.width + radar_w, info.height))
     csv_path = os.path.join(OUTPUT_DIR, "POSIZIONIAUTO_" + base + ".csv")
     csv_f = open(csv_path, "w", newline="", encoding="utf-8")
     csv_w = csv.writer(csv_f)
@@ -303,56 +305,59 @@ def main():
         pronto = gestore.pronto()
         ids = tracker.update([(pos, sq if pronto else None) for (box, sq, pos) in info_giocatori])
 
-        vista = frame.copy()
-        radar = mappa_vuota.copy()
-        col_q = (0, 200, 0) if H is not None else (0, 0, 255)
-        cv2.putText(vista, f"campo: {n_vis} punti", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, col_q, 2)
+        disegna = writer is not None
+        if disegna:
+            vista = frame.copy()
+            radar = mappa_vuota.copy()
+            col_q = (0, 200, 0) if H is not None else (0, 0, 255)
+            cv2.putText(vista, f"campo: {n_vis} punti", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, col_q, 2)
 
+        # PALLA: sempre nel CSV; disegno solo se serve il video
         for box in palla.xyxy:
-            cx, cy = int((box[0]+box[2])/2), int(box[3])
-            cv2.circle(vista, (cx, cy), 5, COL_PALLA, -1)
-            if H is not None:
-                p = cv2.perspectiveTransform(piedi(box), H).reshape(2)
-                if 0 <= p[0] <= cc.LUNGHEZZA and 0 <= p[1] <= cc.LARGHEZZA:
+            if H is None:
+                break
+            p = cv2.perspectiveTransform(piedi(box), H).reshape(2)
+            if 0 <= p[0] <= cc.LUNGHEZZA and 0 <= p[1] <= cc.LARGHEZZA:
+                csv_w.writerow([idx, f"{tempo:.2f}", 0, 0, f"{p[0]:.2f}", f"{p[1]:.2f}"])
+                if disegna:
+                    cv2.circle(vista, (int((box[0]+box[2])/2), int(box[3])), 5, COL_PALLA, -1)
                     cv2.circle(radar, cc.metri_a_pixel(*p), 5, COL_PALLA, -1)
-                    # palla salvata nel CSV: id_giocatore=0, squadra=0
-                    csv_w.writerow([idx, f"{tempo:.2f}", 0, 0, f"{p[0]:.2f}", f"{p[1]:.2f}"])
-                    break   # una sola palla per frame
+                break   # una sola palla per frame
 
+        # GIOCATORI: squadra stabile, sempre nel CSV; disegno opzionale
         for (box, sq, pos), tid in zip(info_giocatori, ids):
-            squadra = tracker.squadra(tid) if tid is not None else sq  # stabile (voto maggioranza)
-            colore = COL_SQUADRA[squadra]
-            cx, cy = int((box[0]+box[2])/2), int(box[3])
-            cv2.ellipse(vista, (cx, cy), (16, 7), 0, 0, 360, colore, 2)
-            if pos is not None:
-                cv2.circle(radar, cc.metri_a_pixel(*pos), 6, colore, -1)
-                cv2.circle(radar, cc.metri_a_pixel(*pos), 6, (0, 0, 0), 1)
-                if tid is not None:
-                    csv_w.writerow([idx, f"{tempo:.2f}", int(tid), squadra+1,
-                                    f"{pos[0]:.2f}", f"{pos[1]:.2f}"])
+            squadra = tracker.squadra(tid) if tid is not None else sq
+            if pos is not None and tid is not None:
+                csv_w.writerow([idx, f"{tempo:.2f}", int(tid), squadra+1,
+                                f"{pos[0]:.2f}", f"{pos[1]:.2f}"])
+            if disegna:
+                colore = COL_SQUADRA[squadra]
+                cv2.ellipse(vista, (int((box[0]+box[2])/2), int(box[3])), (16, 7), 0, 0, 360, colore, 2)
+                if pos is not None:
+                    cv2.circle(radar, cc.metri_a_pixel(*pos), 6, colore, -1)
+                    cv2.circle(radar, cc.metri_a_pixel(*pos), 6, (0, 0, 0), 1)
 
-        # arbitri (colore neutro, non in squadra, non nel CSV)
-        for box in arbitri.xyxy:
-            cx, cy = int((box[0]+box[2])/2), int(box[3])
-            cv2.ellipse(vista, (cx, cy), (16, 7), 0, 0, 360, COL_ARBITRO, 2)
-            if H is not None:
-                p = cv2.perspectiveTransform(piedi(box), H).reshape(2)
-                if 0 <= p[0] <= cc.LUNGHEZZA and 0 <= p[1] <= cc.LARGHEZZA:
-                    cv2.circle(radar, cc.metri_a_pixel(*p), 5, COL_ARBITRO, -1)
+        if disegna:
+            for box in arbitri.xyxy:   # arbitri solo sul video, non nei dati
+                cv2.ellipse(vista, (int((box[0]+box[2])/2), int(box[3])), (16, 7), 0, 0, 360, COL_ARBITRO, 2)
+                if H is not None:
+                    p = cv2.perspectiveTransform(piedi(box), H).reshape(2)
+                    if 0 <= p[0] <= cc.LUNGHEZZA and 0 <= p[1] <= cc.LARGHEZZA:
+                        cv2.circle(radar, cc.metri_a_pixel(*p), 5, COL_ARBITRO, -1)
+            writer.write(np.hstack([vista, cv2.resize(radar, (radar_w, info.height))]))
 
-        combo = np.hstack([vista, cv2.resize(radar, (radar_w, info.height))])
-        writer.write(combo)
         if n_analizzati % 10 == 0:
             print(f"   frame {idx}/{info.total_frames}  campo riconosciuto: {n_ok_campo}/{n_analizzati}")
 
-    writer.release()
+    if writer is not None:
+        writer.release()
     csv_f.close()
     print("\n=========== FATTO ===========")
     print(f"Frame analizzati:        {n_analizzati}")
     print(f"Campo riconosciuto in:   {n_ok_campo}/{n_analizzati} frame")
     print(f"Rilevazioni scartate:    {n_scartati} (fuori campo o non-giocatori)")
-    print(f"Video radar automatico:  {out_path}")
+    print(f"Video radar automatico:  {out_path if writer is not None else '(disattivato --no_video)'}")
     print(f"Dati posizioni:          {csv_path}")
     print("=============================")
 

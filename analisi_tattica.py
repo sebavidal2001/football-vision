@@ -24,6 +24,7 @@ RADAR = os.path.join(BASE, "vista_tattica", "genera_radar_auto.py")
 STATS = os.path.join(BASE, "analisi", "stats_giocatori.py")
 DASH = os.path.join(BASE, "analisi", "confronto_giocatori.py")
 METRICHE = os.path.join(BASE, "analisi", "metriche_avanzate.py")
+REPORTPDF = os.path.join(BASE, "analisi", "report_pdf.py")
 
 
 class App:
@@ -101,9 +102,12 @@ class App:
             self.root.after(0, self.scrivi, "\n▶ FASE 3/4 — Dashboard di confronto giocatori...")
             if os.path.exists(stats_csv):
                 self._run([sys.executable, DASH, stats_csv])
-            self.root.after(0, self.scrivi, "\n▶ FASE 4/4 — Metriche scouting (atletiche + tattiche)...")
+            self.root.after(0, self.scrivi, "\n▶ FASE 4/5 — Metriche scouting (atletiche + tattiche)...")
             self._run([sys.executable, METRICHE, csv_pos, "--min_rilevazioni", self.minr.get()])
+            self.root.after(0, self.scrivi, "\n▶ FASE 5/5 — Report PDF unico...")
+            self._run([sys.executable, REPORTPDF, base, "--dir", OUTPUT])
             self.root.after(0, self.scrivi, "\n✅ FATTO! Risultati nella cartella 'output':")
+            self.root.after(0, self.scrivi, f"   • Report PDF:   REPORT_COMPLETO_{base}.pdf")
             self.root.after(0, self.scrivi, f"   • Video radar:  RADARAUTO_{base}.mp4")
             self.root.after(0, self.scrivi, f"   • Heatmap:      heatmaps_{base}/")
             self.root.after(0, self.scrivi, f"   • Dashboard:    DASHBOARD_{base}.png")
