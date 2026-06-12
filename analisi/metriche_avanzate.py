@@ -154,9 +154,31 @@ def main():
         m = atletiche(tr); m["id_giocatore"] = pid
         righe.append(m)
     righe.sort(key=lambda r: (r["squadra"], -r["distanza_m"]))
+
+    # --- possesso (squadra) + coinvolgimento col pallone (giocatore) ---
+    # per ogni istante con palla, il giocatore più vicino "tocca" la palla
+    pos_per_t = defaultdict(list)
+    for pid, tr in giocatori.items():
+        for (t, x, y, team) in tr:
+            pos_per_t[round(t, 2)].append((pid, team, x, y))
+    poss = Counter(); terzi = Counter(); coinvolg = Counter()
+    for (t, bx, by) in palla:
+        terzi["dx" if bx > 80 else ("sx" if bx < 40 else "centro")] += 1
+        cand = pos_per_t.get(round(t, 2), [])
+        if cand:
+            pid, team, _, _ = min(cand, key=lambda c: (c[2]-bx)**2 + (c[3]-by)**2)
+            poss[team] += 1
+            coinvolg[pid] += 1
+    tot_poss = sum(poss.values()) or 1
+
+    # aggiungi il coinvolgimento ad ogni giocatore (performance calcistica)
+    for r in righe:
+        r["coinvolgimento_palla"] = coinvolg.get(r["id_giocatore"], 0)
+
     campi = ["id_giocatore", "squadra", "n_rilevazioni", "durata_s", "x_medio", "y_medio",
              "zona", "area_azione_m2", "distanza_m", "alta_intensita_m", "sprint_m",
-             "n_sprint", "vel_max_kmh", "n_accelerazioni", "dist_camminata_m", "dist_corsa_m"]
+             "n_sprint", "vel_max_kmh", "n_accelerazioni", "coinvolgimento_palla",
+             "dist_camminata_m", "dist_corsa_m"]
     gpath = os.path.join(out_dir, f"METRICHE_GIOCATORI_{base}.csv")
     with open(gpath, "w", newline="", encoding="utf-8") as f:
         wr = csv.DictWriter(f, fieldnames=campi); wr.writeheader()
@@ -165,19 +187,6 @@ def main():
 
     # --- per squadra ---
     squadre = metriche_squadre(per_frame)
-    # possesso: giocatore più vicino alla palla, per istante (match per tempo arrotondato)
-    pos_per_t = defaultdict(list)
-    for pid, tr in giocatori.items():
-        for (t, x, y, team) in tr:
-            pos_per_t[round(t, 2)].append((team, x, y))
-    poss = Counter(); terzi = Counter()
-    for (t, bx, by) in palla:
-        terzi["dx" if bx > 80 else ("sx" if bx < 40 else "centro")] += 1
-        cand = pos_per_t.get(round(t, 2), [])
-        if cand:
-            team, _, _ = min(cand, key=lambda c: (c[1]-bx)**2 + (c[2]-by)**2)
-            poss[team] += 1
-    tot_poss = sum(poss.values()) or 1
     spath = os.path.join(out_dir, f"METRICHE_SQUADRE_{base}.csv")
     with open(spath, "w", newline="", encoding="utf-8") as f:
         wr = csv.writer(f)
