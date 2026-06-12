@@ -126,6 +126,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("csv")
     ap.add_argument("--min_rilevazioni", type=int, default=15)
+    ap.add_argument("--max_giocatori", type=int, default=30,
+                    help="quante tracce (le più lunghe) tenere: evita migliaia di heatmap su partite intere")
     args = ap.parse_args()
 
     base = os.path.splitext(os.path.basename(args.csv))[0].replace("POSIZIONIAUTO_", "").replace("POSIZIONI_", "")
@@ -134,13 +136,16 @@ def main():
     os.makedirs(heat_dir, exist_ok=True)
 
     dati = carica(args.csv)
-    print(f"Giocatori (tracce) trovati: {len(dati)}")
+    print(f"Tracce trovate: {len(dati)} (su partita intera sono tante: è la frammentazione del broadcast)")
 
-    # statistiche per giocatore
+    # solo giocatori (no palla id=0) con abbastanza rilevazioni, CAPPATI alle tracce più lunghe
+    cand = [(pid, tr) for pid, tr in dati.items() if pid != 0 and len(tr) >= args.min_rilevazioni]
+    cand.sort(key=lambda kv: -len(kv[1]))
+    cand = cand[:args.max_giocatori]
+    print(f"Genero heatmap/stats per le {len(cand)} tracce più lunghe.")
+
     righe = []
-    for pid, tracce in dati.items():
-        if len(tracce) < args.min_rilevazioni:
-            continue
+    for pid, tracce in cand:
         s = statistiche_giocatore(tracce)
         s["id_giocatore"] = pid
         righe.append(s)

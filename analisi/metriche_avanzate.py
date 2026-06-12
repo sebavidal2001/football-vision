@@ -254,17 +254,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("csv")
     ap.add_argument("--min_rilevazioni", type=int, default=20)
+    ap.add_argument("--max_giocatori", type=int, default=30,
+                    help="tracce (le più lunghe) da tenere per le metriche atletiche per-giocatore")
     args = ap.parse_args()
 
     giocatori, palla, per_frame = carica(args.csv)
     base = os.path.splitext(os.path.basename(args.csv))[0].replace("POSIZIONIAUTO_", "").replace("POSIZIONI_", "")
     out_dir = os.path.dirname(os.path.abspath(args.csv))
 
-    # --- per giocatore ---
+    # --- per giocatore (cappato alle tracce più lunghe: su partita intera sono migliaia) ---
+    cand = sorted([(pid, tr) for pid, tr in giocatori.items() if len(tr) >= args.min_rilevazioni],
+                  key=lambda kv: -len(kv[1]))[:args.max_giocatori]
     righe = []
-    for pid, tr in giocatori.items():
-        if len(tr) < args.min_rilevazioni:
-            continue
+    for pid, tr in cand:
         m = atletiche(tr); m["id_giocatore"] = pid
         righe.append(m)
     righe.sort(key=lambda r: (r["squadra"], -r["distanza_m"]))
