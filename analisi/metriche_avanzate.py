@@ -136,6 +136,53 @@ def metriche_squadre(per_frame):
     return out
 
 
+def rileva_formazione(pts):
+    """Stima il modulo (es. '4-3-3') dalla densità delle posizioni di una squadra.
+    Robusto alla frammentazione: usa le ZONE, non le tracce.
+    Ritorna (stringa_modulo, centroidi_ruolo 11x2, indice_portiere)."""
+    from sklearn.cluster import KMeans
+    pts = np.asarray(pts, dtype=float)
+    if len(pts) < 200:
+        return None, None, None
+    cen = KMeans(11, n_init=5, random_state=0).fit(pts).cluster_centers_  # 11 zone-ruolo
+    gk_i = int(np.argmax(np.abs(cen[:, 0] - 60)))   # portiere = zona più profonda
+    own_x = cen[gk_i, 0]
+    outfield = np.delete(cen, gk_i, axis=0)         # 10 di movimento
+    depth = np.abs(outfield[:, 0] - own_x)          # profondità dalla propria porta
+    kl = KMeans(3, n_init=5, random_state=0).fit(depth.reshape(-1, 1))  # 3 linee
+    ordine = np.argsort(kl.cluster_centers_.ravel())                    # dif -> att
+    conteggi = [int((kl.labels_ == c).sum()) for c in ordine]
+    return "-".join(map(str, conteggi)), cen, gk_i
+
+
+def _campo_mpl(ax):
+    ax.set_xlim(-3, L+3); ax.set_ylim(W+3, -3); ax.set_aspect("equal"); ax.axis("off")
+    ax.add_patch(plt.Rectangle((0, 0), L, W, facecolor="#2e7d32", edgecolor="none", zorder=0))
+    lc = dict(color="white", lw=1.3, zorder=1)
+    ax.plot([0, L, L, 0, 0], [0, 0, W, W, 0], **lc)
+    ax.plot([L/2, L/2], [0, W], **lc)
+    ax.add_patch(plt.Circle((L/2, W/2), 9.15, fill=False, color="white", lw=1.3, zorder=1))
+    for x0 in (0, L):
+        s = 1 if x0 == 0 else -1
+        ax.plot([x0, x0+s*20.15, x0+s*20.15, x0], [14.5, 14.5, 55.5, 55.5], **lc)
+
+
+def crea_immagine_formazione(base, formazioni, out_dir):
+    fig, ax = plt.subplots(figsize=(12, 7)); ax.set_facecolor("#2e7d32")
+    _campo_mpl(ax)
+    titolo = []
+    for sq, (modulo, cen, gk_i) in formazioni.items():
+        if cen is None:
+            continue
+        for i, (x, y) in enumerate(cen):
+            ax.scatter(x, y, s=320, c=COL[sq], edgecolors=("yellow" if i == gk_i else "black"),
+                       linewidths=(2.5 if i == gk_i else 1), zorder=3)
+        titolo.append(f"Sq.{sq}: {modulo}")
+    ax.set_title("Formazione media (modulo) — " + "   |   ".join(titolo), fontsize=13)
+    fig.tight_layout(); fig.savefig(os.path.join(out_dir, f"FORMAZIONE_{base}.png"), dpi=110)
+    plt.close(fig)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("csv")
@@ -187,15 +234,25 @@ def main():
 
     # --- per squadra ---
     squadre = metriche_squadre(per_frame)
+    # formazione/modulo (da densità posizioni, robusto alla frammentazione)
+    pts_team = {1: [], 2: []}
+    for pid, tr in giocatori.items():
+        for (t, x, y, team) in tr:
+            if team in (1, 2):
+                pts_team[team].append((x, y))
+    formazioni = {sq: rileva_formazione(pts_team[sq]) for sq in (1, 2)}
+    crea_immagine_formazione(base, formazioni, out_dir)
+
     spath = os.path.join(out_dir, f"METRICHE_SQUADRE_{base}.csv")
     with open(spath, "w", newline="", encoding="utf-8") as f:
         wr = csv.writer(f)
-        wr.writerow(["squadra", "baricentro_x_m", "ampiezza_media_m", "profondita_media_m",
-                     "compattezza_media_m", "possesso_pct"])
+        wr.writerow(["squadra", "modulo", "baricentro_x_m", "ampiezza_media_m",
+                     "profondita_media_m", "compattezza_media_m", "possesso_pct"])
         for sq in (1, 2):
             s = squadre.get(sq, {})
-            wr.writerow([sq, s.get("baricentro_x", ""), s.get("ampiezza_media_m", ""),
-                         s.get("profondita_media_m", ""), s.get("compattezza_media_m", ""),
+            wr.writerow([sq, formazioni[sq][0] or "", s.get("baricentro_x", ""),
+                         s.get("ampiezza_media_m", ""), s.get("profondita_media_m", ""),
+                         s.get("compattezza_media_m", ""),
                          round(100*poss.get(sq, 0)/tot_poss)])
 
     # --- REPORT visivo ---
@@ -205,10 +262,12 @@ def main():
     print(f"  → {gpath}")
     print(f"  → {spath}")
     print(f"  → REPORT_{base}.png")
-    print("\n--- Squadre ---")
+    print(f"  → FORMAZIONE_{base}.png")
+    print("\n--- Squadre (TATTICO, affidabile) ---")
     for sq in (1, 2):
         s = squadre.get(sq, {})
-        print(f"  Squadra {sq}: possesso {round(100*poss.get(sq,0)/tot_poss)}% | "
+        print(f"  Squadra {sq}: modulo {formazioni[sq][0] or '?'} | "
+              f"possesso {round(100*poss.get(sq,0)/tot_poss)}% | "
               f"ampiezza {s.get('ampiezza_media_m','?')}m | profondità {s.get('profondita_media_m','?')}m | "
               f"compattezza {s.get('compattezza_media_m','?')}m")
     print("\n--- Top distanza (atletico) ---")
@@ -228,7 +287,7 @@ def crea_report(base, righe, squadre, poss, terzi, out_dir):
     ax.barh([f"#{r['id_giocatore']} S{r['squadra']}" for r in top],
             [r["distanza_m"] for r in top],
             color=[COL.get(r["squadra"], "#888") for r in top])
-    ax.invert_yaxis(); ax.set_title("Distanza percorsa (m) — atletico"); ax.tick_params(labelsize=8)
+    ax.invert_yaxis(); ax.set_title("Distanza percorsa (m) — atletico [INDICATIVO]", color="#a05000"); ax.tick_params(labelsize=8)
 
     # 2) Alta intensità + sprint
     ax = fig.add_subplot(2, 2, 2)
@@ -236,19 +295,19 @@ def crea_report(base, righe, squadre, poss, terzi, out_dir):
     ax.barh([f"#{r['id_giocatore']} S{r['squadra']}" for r in topi],
             [r["alta_intensita_m"] for r in topi],
             color=[COL.get(r["squadra"], "#888") for r in topi])
-    ax.invert_yaxis(); ax.set_title("Distanza ad alta intensità (>20 km/h)"); ax.tick_params(labelsize=8)
+    ax.invert_yaxis(); ax.set_title("Alta intensità (>20 km/h) — atletico [INDICATIVO]", color="#a05000"); ax.tick_params(labelsize=8)
 
     # 3) Possesso
     ax = fig.add_subplot(2, 2, 3)
     vals = [poss.get(1, 0)/tot*100, poss.get(2, 0)/tot*100]
     ax.bar(["Squadra 1", "Squadra 2"], vals, color=[COL[1], COL[2]])
-    ax.set_title("Possesso territoriale (%)"); ax.set_ylim(0, 100)
+    ax.set_title("Possesso territoriale (%) — tattico [affidabile]", color="#006000"); ax.set_ylim(0, 100)
     for i, v in enumerate(vals):
         ax.text(i, v+2, f"{v:.0f}%", ha="center")
 
     # 4) Forma squadre (tabella testuale)
     ax = fig.add_subplot(2, 2, 4); ax.axis("off")
-    ax.set_title("Forma e compattezza squadre")
+    ax.set_title("Forma e compattezza squadre — tattico [affidabile]", color="#006000")
     testo = f"{'':12}{'Sq.1':>10}{'Sq.2':>10}\n"
     etich = [("Ampiezza", "ampiezza_media_m"), ("Profondità", "profondita_media_m"),
              ("Compattezza", "compattezza_media_m"), ("Baricentro x", "baricentro_x")]
