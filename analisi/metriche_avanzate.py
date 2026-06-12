@@ -183,6 +183,73 @@ def crea_immagine_formazione(base, formazioni, out_dir):
     plt.close(fig)
 
 
+def serie_e_pressing(giocatori, palla):
+    """Serie temporali (baricentro_x, ampiezza) e baricentro in/fuori possesso per squadra."""
+    by_t = defaultdict(list)
+    for pid, tr in giocatori.items():
+        for (t, x, y, team) in tr:
+            if team in (1, 2):
+                by_t[round(t, 2)].append((team, x, y))
+    ball_t = {round(t, 2): (x, y) for (t, x, y) in palla}
+    serie = {1: [], 2: []}
+    bp = {1: [], 2: []}; bf = {1: [], 2: []}   # baricentro_x in / fuori possesso
+    for t in sorted(by_t):
+        gente = by_t[t]
+        poss_team = None
+        if t in ball_t:
+            bx, by = ball_t[t]
+            poss_team = min(gente, key=lambda c: (c[1]-bx)**2 + (c[2]-by)**2)[0]
+        for sq in (1, 2):
+            pts = np.array([(x, y) for (tm, x, y) in gente if tm == sq])
+            if len(pts) < 6:
+                continue
+            cx = float(pts[:, 0].mean())
+            amp = float(np.percentile(pts[:, 1], 90) - np.percentile(pts[:, 1], 10))
+            serie[sq].append((t, cx, amp))
+            if poss_team is not None:
+                (bp if sq == poss_team else bf)[sq].append(cx)
+    pressing = {}
+    for sq in (1, 2):
+        pressing[sq] = {
+            "baricentro_possesso": round(float(np.mean(bp[sq])), 1) if bp[sq] else None,
+            "baricentro_fuori": round(float(np.mean(bf[sq])), 1) if bf[sq] else None,
+        }
+    return serie, pressing
+
+
+def crea_andamento_tattico(base, serie, pressing, out_dir):
+    fig = plt.figure(figsize=(15, 5))
+    # 1) baricentro x nel tempo
+    ax = fig.add_subplot(1, 3, 1)
+    for sq in (1, 2):
+        if serie[sq]:
+            t = [s[0] for s in serie[sq]]; cx = smussa([s[1] for s in serie[sq]], 15)
+            ax.plot(t, cx, color=COL[sq], lw=1.6, label=f"Sq.{sq}")
+    ax.set_title("Baricentro (x) nel tempo"); ax.set_xlabel("s"); ax.set_ylabel("x campo (m)")
+    ax.set_ylim(0, L); ax.legend(fontsize=8)
+    # 2) ampiezza nel tempo
+    ax = fig.add_subplot(1, 3, 2)
+    for sq in (1, 2):
+        if serie[sq]:
+            t = [s[0] for s in serie[sq]]; amp = smussa([s[2] for s in serie[sq]], 15)
+            ax.plot(t, amp, color=COL[sq], lw=1.6, label=f"Sq.{sq}")
+    ax.set_title("Ampiezza (larghezza) nel tempo"); ax.set_xlabel("s"); ax.set_ylabel("ampiezza (m)")
+    ax.legend(fontsize=8)
+    # 3) pressing: baricentro in/fuori possesso
+    ax = fig.add_subplot(1, 3, 3)
+    x = np.arange(2); w = 0.35
+    poss = [pressing[s]["baricentro_possesso"] or 0 for s in (1, 2)]
+    fuori = [pressing[s]["baricentro_fuori"] or 0 for s in (1, 2)]
+    ax.bar(x - w/2, poss, w, label="con palla", color="#2e7d32")
+    ax.bar(x + w/2, fuori, w, label="senza palla", color="#b05000")
+    ax.set_xticks(x); ax.set_xticklabels(["Sq.1", "Sq.2"])
+    ax.set_title("Altezza baricentro (m) — pressing"); ax.set_ylim(0, L); ax.legend(fontsize=8)
+    fig.suptitle("Andamento tattico — " + base, fontweight="bold")
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
+    fig.savefig(os.path.join(out_dir, f"ANDAMENTO_{base}.png"), dpi=110)
+    plt.close(fig)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("csv")
@@ -243,17 +310,23 @@ def main():
     formazioni = {sq: rileva_formazione(pts_team[sq]) for sq in (1, 2)}
     crea_immagine_formazione(base, formazioni, out_dir)
 
+    # andamento tattico nel tempo + pressing (baricentro in/fuori possesso)
+    serie, pressing = serie_e_pressing(giocatori, palla)
+    crea_andamento_tattico(base, serie, pressing, out_dir)
+
     spath = os.path.join(out_dir, f"METRICHE_SQUADRE_{base}.csv")
     with open(spath, "w", newline="", encoding="utf-8") as f:
         wr = csv.writer(f)
         wr.writerow(["squadra", "modulo", "baricentro_x_m", "ampiezza_media_m",
-                     "profondita_media_m", "compattezza_media_m", "possesso_pct"])
+                     "profondita_media_m", "compattezza_media_m", "possesso_pct",
+                     "baricentro_con_palla_m", "baricentro_senza_palla_m"])
         for sq in (1, 2):
             s = squadre.get(sq, {})
             wr.writerow([sq, formazioni[sq][0] or "", s.get("baricentro_x", ""),
                          s.get("ampiezza_media_m", ""), s.get("profondita_media_m", ""),
                          s.get("compattezza_media_m", ""),
-                         round(100*poss.get(sq, 0)/tot_poss)])
+                         round(100*poss.get(sq, 0)/tot_poss),
+                         pressing[sq]["baricentro_possesso"], pressing[sq]["baricentro_fuori"]])
 
     # --- REPORT visivo ---
     crea_report(base, righe, squadre, poss, terzi, out_dir)
@@ -263,6 +336,7 @@ def main():
     print(f"  → {spath}")
     print(f"  → REPORT_{base}.png")
     print(f"  → FORMAZIONE_{base}.png")
+    print(f"  → ANDAMENTO_{base}.png")
     print("\n--- Squadre (TATTICO, affidabile) ---")
     for sq in (1, 2):
         s = squadre.get(sq, {})
