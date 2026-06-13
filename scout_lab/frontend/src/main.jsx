@@ -595,6 +595,62 @@ function App() {
               <Metric icon={<Sparkles />} label="ID tracking attivo" value={selectedTrack ? `#${selectedTrack.track_id}` : 'n/d'} />
             </section>
 
+            {detail.report && (detail.report.formazione || detail.report.team_metrics?.length > 0) && (
+              <section className="results-panel">
+                <div className="panel-heading">
+                  <div>
+                    <p className="eyebrow">Risultati tattici (affidabili)</p>
+                    <h3>Report squadra</h3>
+                  </div>
+                  {detail.report.report_pdf && (
+                    <a className="download-link" href={`${SERVER}${detail.report.report_pdf}`} target="_blank" rel="noreferrer">
+                      Scarica PDF
+                    </a>
+                  )}
+                </div>
+
+                {detail.report.team_metrics?.length > 0 && (
+                  <table className="team-metrics">
+                    <thead>
+                      <tr><th></th><th>Squadra 1</th><th>Squadra 2</th></tr>
+                    </thead>
+                    <tbody>
+                      {[
+                        ['Modulo', 'modulo'],
+                        ['Possesso %', 'possesso_pct'],
+                        ['Ampiezza (m)', 'ampiezza_media_m'],
+                        ['Profondità (m)', 'profondita_media_m'],
+                        ['Compattezza (m)', 'compattezza_media_m'],
+                      ].map(([label, key]) => (
+                        <tr key={key}>
+                          <td>{label}</td>
+                          <td>{detail.report.team_metrics.find((r) => String(r.squadra) === '1')?.[key] ?? '-'}</td>
+                          <td>{detail.report.team_metrics.find((r) => String(r.squadra) === '2')?.[key] ?? '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+
+                <div className="results-gallery">
+                  {[
+                    ['Formazione / modulo', detail.report.formazione],
+                    ['Andamento tattico', detail.report.andamento],
+                    ['Confronto giocatori', detail.report.dashboard],
+                    ['Heatmap Squadra 1', detail.report.heatmap_team1],
+                    ['Heatmap Squadra 2', detail.report.heatmap_team2],
+                  ].filter(([, url]) => url).map(([label, url]) => (
+                    <figure key={label}>
+                      <a href={`${SERVER}${url}`} target="_blank" rel="noreferrer">
+                        <img src={`${SERVER}${url}`} alt={label} loading="lazy" />
+                      </a>
+                      <figcaption>{label}</figcaption>
+                    </figure>
+                  ))}
+                </div>
+              </section>
+            )}
+
             <section className="main-grid">
               <div className="pitch-panel">
                 <div className="panel-heading">

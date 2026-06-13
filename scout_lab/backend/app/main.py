@@ -407,6 +407,26 @@ def output_files_for_base(base: str) -> dict[str, str | None]:
     }
 
 
+def report_bundle(base: str) -> dict[str, Any]:
+    """Assets del report tattico (immagini + metriche squadra) per la pagina Risultati."""
+    def img(name: str) -> str | None:
+        p = OUTPUT_DIR / name
+        return media_url(str(p)) if p.exists() else None
+
+    team_rows = read_rows(OUTPUT_DIR / f"METRICHE_SQUADRE_{base}.csv")
+    heat_dir = OUTPUT_DIR / f"heatmaps_{base}"
+    return {
+        "formazione": img(f"FORMAZIONE_{base}.png"),
+        "andamento": img(f"ANDAMENTO_{base}.png"),
+        "dashboard": img(f"DASHBOARD_{base}.png"),
+        "report_png": img(f"REPORT_{base}.png"),
+        "report_pdf": media_url(str(OUTPUT_DIR / f"REPORT_COMPLETO_{base}.pdf")) if (OUTPUT_DIR / f"REPORT_COMPLETO_{base}.pdf").exists() else None,
+        "heatmap_team1": media_url(str(heat_dir / "_SQUADRA_1.png")) if (heat_dir / "_SQUADRA_1.png").exists() else None,
+        "heatmap_team2": media_url(str(heat_dir / "_SQUADRA_2.png")) if (heat_dir / "_SQUADRA_2.png").exists() else None,
+        "team_metrics": team_rows,
+    }
+
+
 def sync_outputs() -> dict[str, int]:
     init_db()
     imported = 0
@@ -599,6 +619,7 @@ def analysis_detail(analysis_id: int) -> dict[str, Any]:
     payload["tracks"] = [dict(t) for t in tracks]
     payload["reports"] = [dict(r) for r in reports]
     payload["profiles"] = [dict(p) for p in profiles]
+    payload["report"] = report_bundle(analysis["base"])
     return payload
 
 
