@@ -931,3 +931,20 @@ input:focus, select:focus, textarea:focus { border-color: var(--lime); }
 }
 .yt-times { display: flex; gap: 8px; }
 .yt-times .yt-input { width: 50%; }
+
+/* --- Avanzamento job --- */
+.job-chip-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.job-status { display: inline-flex; align-items: center; gap: 5px; text-transform: capitalize; }
+.job-running, .job-queued { color: #ffd54a; }
+.job-done { color: #57e389; }
+.job-failed { color: #ff6b6b; }
+.job-progress {
+  margin: 6px 0 0;
+  font-size: 0.74rem;
+  color: #9fb3c8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }

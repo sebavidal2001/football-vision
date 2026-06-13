@@ -14,6 +14,7 @@ import {
   GitMerge,
   Layers3,
   Link2,
+  Loader2,
   PlayCircle,
   RefreshCw,
   Save,
@@ -356,10 +357,15 @@ function App() {
         const data = await api(`/jobs/${job.id}`);
         setJob(data);
         if (data.status === 'done') {
-          await load();
-          setNotice('Job locale completato e output sincronizzati.');
+          const list = await api('/analyses');
+          setAnalyses(list);
+          // apri automaticamente la nuova analisi appena creata
+          const stem = (data.filename || '').replace(/\.[^.]+$/, '');
+          const match = stem ? list.find((a) => a.base === stem) : null;
+          if (match) setSelectedId(match.id);
+          setNotice('✅ Analisi completata! Risultati pronti qui sotto.');
         }
-        if (data.status === 'failed') setNotice(`Job fallito: ${data.error}`);
+        if (data.status === 'failed') setNotice(`❌ Job fallito: ${data.error}`);
       } catch (e) {
         setNotice(e.message);
       }
@@ -580,8 +586,18 @@ function App() {
 
         {job && (
           <div className="job-chip">
-            <span>Job {job.id}</span>
-            <strong>{job.status}</strong>
+            <div className="job-chip-row">
+              <span>Job {job.id}</span>
+              <strong className={`job-status job-${job.status}`}>
+                {['queued', 'running'].includes(job.status) && <Loader2 size={13} className="spin" />}
+                {job.status}
+              </strong>
+            </div>
+            {job.log && (
+              <p className="job-progress">
+                {job.log.split('\n').filter((l) => l.trim() && !l.startsWith('>')).slice(-1)[0] || ''}
+              </p>
+            )}
           </div>
         )}
 
