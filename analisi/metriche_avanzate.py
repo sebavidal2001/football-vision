@@ -148,9 +148,22 @@ def rileva_formazione(pts):
     gk_i = int(np.argmax(np.abs(cen[:, 0] - 60)))   # portiere = zona più profonda
     own_x = cen[gk_i, 0]
     outfield = np.delete(cen, gk_i, axis=0)         # 10 di movimento
-    depth = np.abs(outfield[:, 0] - own_x)          # profondità dalla propria porta
-    kl = KMeans(3, n_init=5, random_state=0).fit(depth.reshape(-1, 1))  # 3 linee
-    ordine = np.argsort(kl.cluster_centers_.ravel())                    # dif -> att
+    depth = np.abs(outfield[:, 0] - own_x).reshape(-1, 1)   # profondità dalla propria porta
+    # scegli 3 o 4 linee in base a quanto separano bene (così si rileva anche 4-2-3-1)
+    from sklearn.metrics import silhouette_score
+    best = None
+    for k in (3, 4):
+        kl = KMeans(k, n_init=5, random_state=0).fit(depth)
+        if len(set(kl.labels_)) < k:
+            continue
+        try:
+            s = silhouette_score(depth, kl.labels_)
+        except Exception:
+            s = -1.0
+        if best is None or s > best[0]:
+            best = (s, kl)
+    kl = best[1] if best else KMeans(3, n_init=5, random_state=0).fit(depth)
+    ordine = np.argsort(kl.cluster_centers_.ravel())   # dif -> att
     conteggi = [int((kl.labels_ == c).sum()) for c in ordine]
     return "-".join(map(str, conteggi)), cen, gk_i
 
@@ -178,7 +191,8 @@ def crea_immagine_formazione(base, formazioni, out_dir):
             ax.scatter(x, y, s=320, c=COL[sq], edgecolors=("yellow" if i == gk_i else "black"),
                        linewidths=(2.5 if i == gk_i else 1), zorder=3)
         titolo.append(f"Sq.{sq}: {modulo}")
-    ax.set_title("Formazione media (modulo) — " + "   |   ".join(titolo), fontsize=13)
+    ax.set_title("Formazione media (modulo, INDICATIVO) — " + "   |   ".join(titolo)
+                 + "\n(approssimato; affidabile su partita intera)", fontsize=11)
     fig.tight_layout(); fig.savefig(os.path.join(out_dir, f"FORMAZIONE_{base}.png"), dpi=110)
     plt.close(fig)
 
