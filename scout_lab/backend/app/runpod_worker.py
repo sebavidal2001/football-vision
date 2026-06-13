@@ -120,6 +120,7 @@ def _setup_script() -> str:
         "cd fv && git pull -q || true\n"
         "mkdir -p vista_tattica clips_input output\n"
         "pip install -q ultralytics supervision scikit-learn 2>/dev/null\n"
+        "pip install -q torchreid gdown 2>/dev/null || true\n"   # Re-ID (se fallisce, fallback ResNet50)
         f"{dl}\n"
         'echo SETUP_OK'
     )
@@ -127,7 +128,7 @@ def _setup_script() -> str:
 
 def run_remote(video_path: str, salto: int = 3, ogni_campo: int = 2, imgsz: int = 1280,
                out_dir: str | None = None, log: Callable[[str], None] | None = None,
-               keep_pod: bool = False) -> str:
+               keep_pod: bool = False, embeddings: bool = True) -> str:
     """Esegue genera_radar_auto su RunPod e ritorna il path locale del CSV scaricato."""
     import runpod
     api_key = os.environ.get("RUNPOD_API_KEY")
@@ -192,8 +193,9 @@ def run_remote(video_path: str, salto: int = 3, ogni_campo: int = 2, imgsz: int 
         _log(log, f"▶ Carico il video sul pod ({Path(video_path).stat().st_size/1e6:.0f} MB)...")
         sftp.put(video_path, remote_video)
 
+        emb_flag = " --embeddings" if embeddings else ""
         cmd = (f"cd {REMOTE_ROOT} && python vista_tattica/genera_radar_auto.py "
-               f"'{remote_video}' --salto {salto} --ogni_campo {ogni_campo} --imgsz {imgsz} --no_video")
+               f"'{remote_video}' --salto {salto} --ogni_campo {ogni_campo} --imgsz {imgsz} --no_video{emb_flag}")
         _log(log, "▶ Eseguo il rilevamento su GPU...")
         _exec(ssh, cmd, log)
 
@@ -201,6 +203,14 @@ def run_remote(video_path: str, salto: int = 3, ogni_campo: int = 2, imgsz: int 
         local_csv = os.path.join(out_dir, f"POSIZIONIAUTO_{base}.csv")
         _log(log, "▶ Scarico il CSV dei risultati...")
         sftp.get(remote_csv, local_csv)
+        # scarica anche le impronte Re-ID, se prodotte
+        if embeddings:
+            try:
+                sftp.get(posixpath.join(REMOTE_ROOT, "output", f"EMBEDDINGS_{base}.npz"),
+                         os.path.join(out_dir, f"EMBEDDINGS_{base}.npz"))
+                _log(log, "   Impronte Re-ID scaricate.")
+            except Exception:
+                _log(log, "   (nessun file embeddings prodotto)")
         sftp.close()
         _log(log, f"✅ Fatto: {local_csv}")
         return local_csv

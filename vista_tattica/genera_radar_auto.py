@@ -220,6 +220,45 @@ def crea_copia_web_video(path):
         return None
 
 
+def _carica_embedder():
+    """Estrattore di impronte visive (Re-ID): OSNet se disponibile, altrimenti ResNet50."""
+    import torch
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    try:
+        from torchreid.utils import FeatureExtractor
+        ex = FeatureExtractor(model_name="osnet_x1_0", device=device)
+        print("   Re-ID: OSNet (torchreid)")
+        return "osnet", ex, device
+    except Exception as e:
+        print(f"   Re-ID: OSNet non disponibile ({e}); uso ResNet50 (torchvision)")
+        import torchvision as tv
+        m = tv.models.resnet50(weights=tv.models.ResNet50_Weights.DEFAULT)
+        m.fc = torch.nn.Identity()
+        m.eval().to(device)
+        return "resnet50", m, device
+
+
+def _embeddings_batch(kind, model, device, crops):
+    """crops: lista di ritagli BGR (numpy) → array NxD L2-normalizzato."""
+    import torch
+    if not crops:
+        return np.zeros((0, 1), dtype=np.float32)
+    if kind == "osnet":
+        v = model(crops).cpu().numpy()
+    else:
+        batch = []
+        for c in crops:
+            r = cv2.resize(c, (128, 256))
+            r = cv2.cvtColor(r, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+            r = (r - np.array([0.485, 0.456, 0.406])) / np.array([0.229, 0.224, 0.225])
+            batch.append(r.transpose(2, 0, 1))
+        t = torch.tensor(np.array(batch), dtype=torch.float32, device=device)
+        with torch.no_grad():
+            v = model(t).cpu().numpy()
+    n = np.linalg.norm(v, axis=1, keepdims=True)
+    return (v / np.clip(n, 1e-6, None)).astype(np.float32)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("video")
@@ -231,6 +270,8 @@ def main():
     ap.add_argument("--modello_giocatori", default=MODELLO_GIOCATORI)
     ap.add_argument("--no_video", action="store_true",
                     help="non salvare il video radar (più veloce, file leggero: per partite intere)")
+    ap.add_argument("--embeddings", action="store_true",
+                    help="calcola un'impronta visiva (Re-ID) per traccia → migliora il merge identità")
     args = ap.parse_args()
 
     from ultralytics import YOLO
@@ -266,6 +307,18 @@ def main():
     n_scartati = 0
     H = None
     n_vis = 0
+
+    # Re-ID (impronte visive) — opzionale, isolato: se fallisce, la pipeline continua
+    emb_kind = emb_model = emb_device = None
+    emb_sum: dict = {}
+    emb_cnt: dict = {}
+    if args.embeddings:
+        print("⚙  Carico il modello Re-ID (impronte visive)...")
+        try:
+            emb_kind, emb_model, emb_device = _carica_embedder()
+        except Exception as e:
+            print(f"   ⚠ Re-ID non disponibile: {e} — continuo senza")
+            args.embeddings = False
 
     print("▶  Genero il radar automatico...")
     for idx, frame in enumerate(sv.get_video_frames_generator(args.video)):
@@ -326,6 +379,29 @@ def main():
         pronto = gestore.pronto()
         ids = tracker.update([(pos, sq if pronto else None) for (box, sq, pos) in info_giocatori])
 
+        # Re-ID: ogni 3 frame analizzati, accumula un'impronta visiva per traccia
+        if args.embeddings and n_analizzati % 3 == 0:
+            crops, crop_tids = [], []
+            for (box, sq, pos), tid in zip(info_giocatori, ids):
+                if tid is None:
+                    continue
+                x1, y1, x2, y2 = (int(v) for v in box)
+                crop = frame[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
+                if crop.size:
+                    crops.append(crop)
+                    crop_tids.append(tid)
+            if crops:
+                try:
+                    for tid, v in zip(crop_tids, _embeddings_batch(emb_kind, emb_model, emb_device, crops)):
+                        if tid in emb_sum:
+                            emb_sum[tid] += v
+                            emb_cnt[tid] += 1
+                        else:
+                            emb_sum[tid] = v.copy()
+                            emb_cnt[tid] = 1
+                except Exception as e:
+                    print(f"   ⚠ embedding frame {idx} saltato: {e}")
+
         disegna = writer is not None
         if disegna:
             vista = frame.copy()
@@ -384,6 +460,19 @@ def main():
         writer.release()
         web_path = crea_copia_web_video(out_path)
     csv_f.close()
+
+    # salva le impronte Re-ID per traccia (media L2-normalizzata)
+    if args.embeddings and emb_sum:
+        ids_arr = np.array(sorted(emb_sum.keys()), dtype=np.int32)
+        dim = len(next(iter(emb_sum.values())))
+        mat = np.zeros((len(ids_arr), dim), dtype=np.float32)
+        for i, tid in enumerate(ids_arr):
+            v = emb_sum[tid] / max(1, emb_cnt[tid])
+            nrm = float(np.linalg.norm(v))
+            mat[i] = v / nrm if nrm > 1e-6 else v
+        np.savez_compressed(os.path.join(OUTPUT_DIR, f"EMBEDDINGS_{base}.npz"), ids=ids_arr, vectors=mat)
+        print(f"Impronte Re-ID:          {len(ids_arr)} tracce")
+
     print("\n=========== FATTO ===========")
     print(f"Frame analizzati:        {n_analizzati}")
     print(f"Campo riconosciuto in:   {n_ok_campo}/{n_analizzati} frame")

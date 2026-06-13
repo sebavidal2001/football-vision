@@ -623,6 +623,39 @@ def analysis_detail(analysis_id: int) -> dict[str, Any]:
     return payload
 
 
+_EMB_CACHE: dict[str, Any] = {}
+
+
+def load_embeddings(base: str) -> dict[int, Any]:
+    """Carica le impronte Re-ID (track_id -> vettore L2-normalizzato) per un'analisi."""
+    path = OUTPUT_DIR / f"EMBEDDINGS_{base}.npz"
+    if not path.exists():
+        return {}
+    key = (base, path.stat().st_mtime)
+    if _EMB_CACHE.get("key") == key:
+        return _EMB_CACHE.get("data", {})
+    data: dict[int, Any] = {}
+    try:
+        import numpy as np
+        npz = np.load(path)
+        vecs = npz["vectors"]
+        data = {int(i): vecs[k] for k, i in enumerate(npz["ids"])}
+    except Exception:
+        data = {}
+    _EMB_CACHE["key"] = key
+    _EMB_CACHE["data"] = data
+    return data
+
+
+def attach_embeddings(tracks: list[dict[str, Any]], base: str) -> None:
+    """Aggiunge il campo 'emb' (vettore Re-ID) a ogni traccia, per il punteggio di merge."""
+    emb = load_embeddings(base)
+    if not emb:
+        return
+    for t in tracks:
+        t["emb"] = emb.get(int(t.get("track_id", -1)))
+
+
 def merge_score(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any] | None:
     team_a = a.get("team_override") or a.get("team")
     team_b = b.get("team_override") or b.get("team")
@@ -648,16 +681,30 @@ def merge_score(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any] | None:
     zone_bonus = 8 if a.get("zone") == b.get("zone") else 0
     conf_bonus = min(a.get("confidence", 0), b.get("confidence", 0)) * 0.12
     score = int(max(0, min(98, 92 - gap * 4.2 - dist * 1.7 + zone_bonus + conf_bonus)))
+
+    # Re-ID: somiglianza visiva (coseno tra impronte normalizzate)
+    sim = None
+    ea, eb = a.get("emb"), b.get("emb")
+    if ea is not None and eb is not None:
+        sim = float((ea * eb).sum())
+        if sim < 0.35:
+            return None  # aspetto troppo diverso: quasi certo un altro giocatore
+        score = int(max(0, min(99, score + (sim - 0.6) * 35)))
+
     if score < 38:
         return None
+    reason = f"gap {gap:.1f}s, distanza {dist:.1f}m, squadra {team_a or team_b or 'n/d'}"
+    if sim is not None:
+        reason += f", aspetto {int(sim * 100)}%"
     return {
         "score": score,
         "gap_s": round(gap, 2),
         "distance_m": round(dist, 2),
+        "similarity": round(sim, 3) if sim is not None else None,
         "track_ids": [a["id"], b["id"]],
         "track_labels": [f"#{a['track_id']}", f"#{b['track_id']}"],
         "ordered_track_ids": [first["id"], second["id"]],
-        "reason": f"gap {gap:.1f}s, distanza {dist:.1f}m, squadra {team_a or team_b or 'n/d'}",
+        "reason": reason,
         "tracks": [a, b],
     }
 
@@ -685,7 +732,10 @@ def merge_suggestions(analysis_id: int, limit: int = 24) -> list[dict[str, Any]]
             """,
             (analysis_id,),
         ).fetchall()
+        base_row = conn.execute("select base from analyses where id=?", (analysis_id,)).fetchone()
+    base = base_row["base"] if base_row else ""
     tracks = [dict(r) for r in rows if r["id"] not in used]
+    attach_embeddings(tracks, base)
     suggestions: list[dict[str, Any]] = []
     for i, a in enumerate(tracks):
         for b in tracks[i + 1 :]:
@@ -694,6 +744,8 @@ def merge_suggestions(analysis_id: int, limit: int = 24) -> list[dict[str, Any]]
             item = merge_score(a, b)
             if item:
                 suggestions.append(item)
+    for t in tracks:
+        t.pop("emb", None)  # rimuovi i vettori (non serializzabili) prima della risposta
     suggestions.sort(key=lambda s: (-s["score"], s["gap_s"], s["distance_m"]))
     return suggestions[: max(1, min(limit, 60))]
 
@@ -769,8 +821,13 @@ def identity_suggestions(analysis_id: int, limit: int = 24) -> dict[str, Any]:
             """,
             (analysis_id,),
         ).fetchall()
+        base_row = conn.execute("select base from analyses where id=?", (analysis_id,)).fetchone()
 
+    base = base_row["base"] if base_row else ""
     candidates = [dict(r) for r in rows if r["id"] not in used]
+    attach_embeddings(candidates, base)
+    for items in profile_tracks.values():
+        attach_embeddings(items, base)
     suggestions: list[dict[str, Any]] = []
     for track in candidates:
         best = None
@@ -780,6 +837,12 @@ def identity_suggestions(analysis_id: int, limit: int = 24) -> dict[str, Any]:
                 best = item
         if best:
             suggestions.append(best)
+    # rimuovi i vettori Re-ID (non serializzabili) prima della risposta
+    for t in candidates:
+        t.pop("emb", None)
+    for items in profile_tracks.values():
+        for t in items:
+            t.pop("emb", None)
     suggestions.sort(key=lambda s: (-s["score"], s["track"]["first_time_s"]))
     return {
         "profiles": len(profiles),
