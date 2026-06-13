@@ -48,6 +48,20 @@ GPU_FALLBACK = [
 ]
 
 
+def _load_secrets_if_missing() -> None:
+    """Carica scout_lab/data/secrets.env nell'ambiente se le chiavi non sono già impostate."""
+    if os.environ.get("RUNPOD_API_KEY"):
+        return
+    env_file = Path(__file__).resolve().parents[2] / "data" / "secrets.env"
+    if not env_file.exists():
+        return
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
 def _log(cb: Callable[[str], None] | None, msg: str) -> None:
     print(msg, flush=True)
     if cb:
@@ -131,9 +145,10 @@ def run_remote(video_path: str, salto: int = 3, ogni_campo: int = 2, imgsz: int 
                keep_pod: bool = False, embeddings: bool = True) -> str:
     """Esegue genera_radar_auto su RunPod e ritorna il path locale del CSV scaricato."""
     import runpod
+    _load_secrets_if_missing()
     api_key = os.environ.get("RUNPOD_API_KEY")
     if not api_key:
-        raise RuntimeError("RUNPOD_API_KEY non impostata (variabile d'ambiente).")
+        raise RuntimeError("RUNPOD_API_KEY non impostata (controlla scout_lab/data/secrets.env).")
     runpod.api_key = api_key
 
     video_path = str(video_path)
