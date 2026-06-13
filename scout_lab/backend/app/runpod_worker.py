@@ -35,6 +35,17 @@ MODELS = {
 REMOTE_ROOT = "/workspace/fv"
 DEFAULT_IMAGE = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
 DEFAULT_GPU = "NVIDIA GeForce RTX 4090"
+# GPU di ripiego se la preferita non è disponibile (dalla più conveniente alla più potente)
+GPU_FALLBACK = [
+    "NVIDIA GeForce RTX 4090",
+    "NVIDIA GeForce RTX 3090",
+    "NVIDIA RTX A5000",
+    "NVIDIA RTX A4000",
+    "NVIDIA GeForce RTX 4080",
+    "NVIDIA A40",
+    "NVIDIA L4",
+    "NVIDIA L40S",
+]
 
 
 def _log(cb: Callable[[str], None] | None, msg: str) -> None:
@@ -133,17 +144,39 @@ def run_remote(video_path: str, salto: int = 3, ogni_campo: int = 2, imgsz: int 
     cloud = os.environ.get("RUNPOD_CLOUD", "COMMUNITY")
     key_path = os.environ.get("RUNPOD_SSH_KEY", "~/.ssh/id_ed25519")
 
-    _log(log, f"▶ Accendo un pod RunPod ({gpu}, {cloud})...")
-    pod = runpod.create_pod(
-        name="football-vision",
-        image_name=image,
-        gpu_type_id=gpu,
-        cloud_type=cloud,
-        container_disk_in_gb=25,
-        volume_in_gb=0,
-        ports="22/tcp",
-        support_public_ip=True,
-    )
+    # ordine GPU: prima la preferita, poi i ripieghi (senza duplicati)
+    gpu_order = [gpu] + [g for g in GPU_FALLBACK if g != gpu]
+    cloud_order = [cloud] + (["SECURE"] if cloud != "SECURE" else ["COMMUNITY"])
+
+    _log(log, "▶ Cerco una GPU disponibile su RunPod...")
+    pod = None
+    last_err = None
+    for cl in cloud_order:
+        for g in gpu_order:
+            try:
+                _log(log, f"   provo {g} ({cl})...")
+                pod = runpod.create_pod(
+                    name="football-vision",
+                    image_name=image,
+                    gpu_type_id=g,
+                    cloud_type=cl,
+                    container_disk_in_gb=25,
+                    volume_in_gb=0,
+                    ports="22/tcp",
+                    support_public_ip=True,
+                )
+                _log(log, f"   ✅ Pod avviato su {g} ({cl})")
+                break
+            except Exception as exc:
+                last_err = exc
+                msg = str(exc).lower()
+                if "resource" in msg or "not have" in msg or "availab" in msg:
+                    continue  # nessuna disponibilità: prova la prossima
+                raise  # errore diverso (es. auth) -> fermati subito
+        if pod:
+            break
+    if not pod:
+        raise RuntimeError(f"Nessuna GPU disponibile al momento su RunPod. Ultimo errore: {last_err}")
     pod_id = pod["id"]
     _log(log, f"   Pod creato: {pod_id}")
     ssh = None
