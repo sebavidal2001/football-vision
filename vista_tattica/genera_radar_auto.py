@@ -21,6 +21,7 @@ import os
 import sys
 import csv
 import argparse
+import subprocess
 from collections import Counter
 import numpy as np
 import cv2
@@ -199,6 +200,26 @@ def homography_da_keypoints(kp_xy, kp_conf, soglia):
     return H, int(vis.sum())
 
 
+def crea_copia_web_video(path):
+    """Crea una copia H.264 riproducibile nel browser quando ffmpeg e disponibile."""
+    web_path = os.path.splitext(path)[0] + "_WEB.mp4"
+    try:
+        proc = subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", path, "-map", "0:v:0",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+                "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart", web_path,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        return web_path if proc.returncode == 0 and os.path.exists(web_path) else None
+    except Exception:
+        return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("video")
@@ -333,10 +354,18 @@ def main():
                                 f"{pos[0]:.2f}", f"{pos[1]:.2f}"])
             if disegna:
                 colore = COL_SQUADRA[squadra]
-                cv2.ellipse(vista, (int((box[0]+box[2])/2), int(box[3])), (16, 7), 0, 0, 360, colore, 2)
+                cx, foot_y = int((box[0] + box[2]) / 2), int(box[3])
+                cv2.ellipse(vista, (cx, foot_y), (16, 7), 0, 0, 360, colore, 2)
+                label = f"#{int(tid)}" if tid is not None else "?"
+                tx, ty = max(0, cx - 18), max(18, int(box[1]) - 6)
+                cv2.putText(vista, label, (tx + 1, ty + 1), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3)
+                cv2.putText(vista, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.55, colore, 2)
                 if pos is not None:
-                    cv2.circle(radar, cc.metri_a_pixel(*pos), 6, colore, -1)
-                    cv2.circle(radar, cc.metri_a_pixel(*pos), 6, (0, 0, 0), 1)
+                    px, py = cc.metri_a_pixel(*pos)
+                    cv2.circle(radar, (px, py), 6, colore, -1)
+                    cv2.circle(radar, (px, py), 6, (0, 0, 0), 1)
+                    cv2.putText(radar, label, (px + 8, py - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 3)
+                    cv2.putText(radar, label, (px + 7, py - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, colore, 1)
 
         if disegna:
             for box in arbitri.xyxy:   # arbitri solo sul video, non nei dati
@@ -350,14 +379,18 @@ def main():
         if n_analizzati % 10 == 0:
             print(f"   frame {idx}/{info.total_frames}  campo riconosciuto: {n_ok_campo}/{n_analizzati}")
 
+    web_path = None
     if writer is not None:
         writer.release()
+        web_path = crea_copia_web_video(out_path)
     csv_f.close()
     print("\n=========== FATTO ===========")
     print(f"Frame analizzati:        {n_analizzati}")
     print(f"Campo riconosciuto in:   {n_ok_campo}/{n_analizzati} frame")
     print(f"Rilevazioni scartate:    {n_scartati} (fuori campo o non-giocatori)")
     print(f"Video radar automatico:  {out_path if writer is not None else '(disattivato --no_video)'}")
+    if web_path:
+        print(f"Video radar web:         {web_path}")
     print(f"Dati posizioni:          {csv_path}")
     print("=============================")
 

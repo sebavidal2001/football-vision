@@ -1,0 +1,6 @@
+fastapi>=0.111
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+pydantic>=2.7
+runpod>=1.6
+paramiko>=3.4

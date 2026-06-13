@@ -18,3 +18,8 @@ vista_tattica/_*.py
 # Sistema
 .DS_Store
 Thumbs.db
+
+# Scout Lab locale
+scout_lab/data/
+scout_lab/frontend/node_modules/
+scout_lab/frontend/dist/
