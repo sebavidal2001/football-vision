@@ -104,6 +104,25 @@ class YoutubeRequest(BaseModel):
     analyze: bool = True        # se False, scarica soltanto
 
 
+class RosterPlayer(BaseModel):
+    team: int
+    number: str = ""
+    name: str
+    role: str = ""
+
+
+class RosterUpdate(BaseModel):
+    players: list[RosterPlayer]
+
+
+class AssignRequest(BaseModel):
+    track_db_id: int
+    name: str
+    number: str = ""
+    role: str = ""
+    team: int | None = None
+
+
 class ProfileUpsert(BaseModel):
     analysis_id: int
     track_db_ids: list[int]
@@ -202,6 +221,15 @@ def init_db() -> None:
                 profile_id integer not null,
                 track_db_id integer not null,
                 primary key (profile_id, track_db_id)
+            );
+
+            create table if not exists roster (
+                id integer primary key autoincrement,
+                analysis_id integer not null,
+                team integer not null,
+                number text default '',
+                name text not null,
+                role text default ''
             );
             """
         )
@@ -633,6 +661,9 @@ def analysis_detail(analysis_id: int) -> dict[str, Any]:
     payload["reports"] = [dict(r) for r in reports]
     payload["profiles"] = [dict(p) for p in profiles]
     payload["report"] = report_bundle(analysis["base"])
+    with db() as conn:
+        payload["roster"] = [dict(r) for r in conn.execute(
+            "select * from roster where analysis_id=? order by team, number", (analysis_id,)).fetchall()]
     return payload
 
 
@@ -863,6 +894,106 @@ def identity_suggestions(analysis_id: int, limit: int = 24) -> dict[str, Any]:
         "suggestions": suggestions[: max(1, min(limit, 80))],
         "note": "Suggerimenti euristici: confermare su clip/radar prima di applicare.",
     }
+
+
+def _frame_rows_at(positions_csv: str, t: float) -> tuple[float, list[dict[str, str]]]:
+    """Righe (giocatori) del fotogramma col tempo più vicino a t."""
+    rows = read_rows(Path(positions_csv))
+    players = [r for r in rows if int(safe_float(r.get("id_giocatore"))) != 0]
+    if not players:
+        return 0.0, []
+    times = sorted({safe_float(r.get("tempo_s")) for r in players})
+    nearest = min(times, key=lambda x: abs(x - t))
+    frame = [r for r in players if abs(safe_float(r.get("tempo_s")) - nearest) < 1e-3]
+    return nearest, frame
+
+
+@app.put("/api/v1/analyses/{analysis_id}/roster")
+def set_roster(analysis_id: int, data: RosterUpdate) -> dict[str, Any]:
+    with db() as conn:
+        conn.execute("delete from roster where analysis_id=?", (analysis_id,))
+        for p in data.players:
+            if p.name.strip():
+                conn.execute(
+                    "insert into roster (analysis_id, team, number, name, role) values (?, ?, ?, ?, ?)",
+                    (analysis_id, p.team, p.number.strip(), p.name.strip(), p.role.strip()),
+                )
+        rows = [dict(r) for r in conn.execute(
+            "select * from roster where analysis_id=? order by team, number", (analysis_id,)).fetchall()]
+    return {"players": rows}
+
+
+@app.get("/api/v1/analyses/{analysis_id}/tracks-at")
+def tracks_at(analysis_id: int, t: float = 0.0) -> dict[str, Any]:
+    with db() as conn:
+        a = conn.execute("select positions_csv from analyses where id=?", (analysis_id,)).fetchone()
+        if not a:
+            raise HTTPException(404, "Analisi non trovata")
+        id_map = {int(r["track_id"]): int(r["id"]) for r in conn.execute(
+            "select id, track_id from tracks where analysis_id=?", (analysis_id,)).fetchall()}
+    nearest, frame = _frame_rows_at(a["positions_csv"], t)
+    out = []
+    for r in frame:
+        tid = int(safe_float(r.get("id_giocatore")))
+        if tid in id_map:
+            out.append({
+                "track_db_id": id_map[tid], "track_id": tid,
+                "team": int(safe_float(r.get("squadra"))),
+                "x": round(safe_float(r.get("x_m")), 1), "y": round(safe_float(r.get("y_m")), 1),
+            })
+    return {"time": round(nearest, 2), "tracks": out}
+
+
+@app.get("/api/v1/analyses/{analysis_id}/snapshot")
+def snapshot(analysis_id: int, t: float = 0.0) -> FileResponse:
+    with db() as conn:
+        a = conn.execute("select positions_csv from analyses where id=?", (analysis_id,)).fetchone()
+    if not a:
+        raise HTTPException(404, "Analisi non trovata")
+    nearest, frame = _frame_rows_at(a["positions_csv"], t)
+    sys.path.insert(0, str(ROOT / "vista_tattica"))
+    import campo_calcio as cc
+    import cv2
+    img = cc.disegna_campo()
+    for r in frame:
+        x, y = safe_float(r.get("x_m")), safe_float(r.get("y_m"))
+        tid = int(safe_float(r.get("id_giocatore")))
+        team = int(safe_float(r.get("squadra")))
+        col = (255, 90, 0) if team == 1 else (0, 90, 255)
+        px, py = cc.metri_a_pixel(x, y)
+        cv2.circle(img, (px, py), 10, col, -1)
+        cv2.circle(img, (px, py), 10, (0, 0, 0), 1)
+        cv2.putText(img, str(tid), (px + 11, py + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    cv2.putText(img, f"t = {nearest:.1f}s", (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    out = DATA_DIR / f"snapshot_{analysis_id}.png"
+    cv2.imwrite(str(out), img)
+    return FileResponse(out)
+
+
+@app.post("/api/v1/analyses/{analysis_id}/assign")
+def assign_identity(analysis_id: int, data: AssignRequest) -> dict[str, Any]:
+    with db() as conn:
+        track = conn.execute("select * from tracks where id=? and analysis_id=?", (data.track_db_id, analysis_id)).fetchone()
+        if not track:
+            raise HTTPException(404, "Traccia non trovata")
+        team = data.team if data.team is not None else (track["team_override"] or track["team"])
+        conn.execute(
+            "update tracks set player_name=?, jersey_number=?, role=?, team_override=? where id=?",
+            (data.name, data.number, data.role, team, data.track_db_id),
+        )
+        prof = conn.execute(
+            "select id from player_profiles where analysis_id=? and display_name=?", (analysis_id, data.name)).fetchone()
+        if prof:
+            pid = int(prof["id"])
+        else:
+            cur = conn.execute(
+                "insert into player_profiles (analysis_id, display_name, jersey_number, role, team, notes, created_at)"
+                " values (?, ?, ?, ?, ?, '', ?)",
+                (analysis_id, data.name, data.number, data.role, team, now_iso()),
+            )
+            pid = int(cur.lastrowid)
+        conn.execute("insert or ignore into profile_tracks (profile_id, track_db_id) values (?, ?)", (pid, data.track_db_id))
+    return {"ok": True, "profile_id": pid, "player": data.name}
 
 
 @app.patch("/api/v1/tracks/{track_db_id}")

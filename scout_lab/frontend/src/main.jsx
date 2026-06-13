@@ -104,6 +104,10 @@ function App() {
   const [ytUrl, setYtUrl] = useState('');
   const [ytStart, setYtStart] = useState('00:00:00');
   const [ytEnd, setYtEnd] = useState('00:01:00');
+  const [rosterT1, setRosterT1] = useState('');
+  const [rosterT2, setRosterT2] = useState('');
+  const [assignTime, setAssignTime] = useState(0);
+  const [tracksAtT, setTracksAtT] = useState([]);
   const [job, setJob] = useState(null);
   const [selectedTrackIds, setSelectedTrackIds] = useState(new Set());
   const [reviewMode, setReviewMode] = useState('reviewable');
@@ -160,6 +164,62 @@ function App() {
     () => detail?.tracks?.find((track) => track.id === selectedTrackId),
     [detail, selectedTrackId],
   );
+
+  async function refreshDetail() {
+    if (!selectedId) return;
+    const data = await api(`/analyses/${selectedId}`);
+    setDetail(data);
+  }
+
+  // popola le textarea della distinta dai dati salvati
+  useEffect(() => {
+    const ros = detail?.roster || [];
+    const fmtTeam = (n) => ros.filter((r) => r.team === n)
+      .map((r) => `${r.number ? r.number + ' ' : ''}${r.name}`).join('\n');
+    setRosterT1(fmtTeam(1));
+    setRosterT2(fmtTeam(2));
+  }, [detail?.id]);
+
+  function parseRoster(text, team) {
+    return (text || '').split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
+      const m = l.match(/^(\d+)\s+(.*)$/);
+      return m ? { team, number: m[1], name: m[2], role: '' } : { team, number: '', name: l, role: '' };
+    });
+  }
+
+  async function saveRoster() {
+    if (!selectedId) return;
+    setBusy(true);
+    try {
+      const players = [...parseRoster(rosterT1, 1), ...parseRoster(rosterT2, 2)];
+      await api(`/analyses/${selectedId}/roster`, { method: 'PUT', body: JSON.stringify({ players }) });
+      await refreshDetail();
+      setNotice(`Distinta salvata (${players.length} giocatori).`);
+    } catch (e) { setNotice(e.message); } finally { setBusy(false); }
+  }
+
+  async function loadTracksAt(t) {
+    if (!selectedId) return;
+    try {
+      const d = await api(`/analyses/${selectedId}/tracks-at?t=${t}`);
+      setTracksAtT(d.tracks || []);
+    } catch { setTracksAtT([]); }
+  }
+
+  async function assignTrack(trackDbId, value) {
+    if (!value) return;
+    try {
+      const p = JSON.parse(value);
+      await api(`/analyses/${selectedId}/assign`, {
+        method: 'POST',
+        body: JSON.stringify({ track_db_id: trackDbId, name: p.name, number: p.number || '', role: p.role || '', team: p.team }),
+      });
+      setNotice(`Track assegnato a ${p.name}.`);
+      await refreshDetail();
+    } catch (e) { setNotice(e.message); }
+  }
+
+  const rosterPlayers = detail?.roster || [];
 
   useEffect(() => {
     if (!selectedProfileId) {
@@ -707,6 +767,57 @@ function App() {
                 </div>
               </section>
             )}
+
+            <section className="results-panel">
+              <div className="panel-heading">
+                <div>
+                  <p className="eyebrow">Identità</p>
+                  <h3>Distinta & assegnazione</h3>
+                </div>
+                <button className="download-link" onClick={saveRoster} disabled={busy}>Salva distinta</button>
+              </div>
+
+              <div className="roster-grid">
+                <div>
+                  <p className="yt-title">Squadra 1 — una riga per giocatore: "numero nome"</p>
+                  <textarea className="roster-area" value={rosterT1} onChange={(e) => setRosterT1(e.target.value)}
+                    placeholder={'1 Donnarumma\n2 Hakimi\n...'} />
+                </div>
+                <div>
+                  <p className="yt-title">Squadra 2</p>
+                  <textarea className="roster-area" value={rosterT2} onChange={(e) => setRosterT2(e.target.value)}
+                    placeholder={'1 Sommer\n95 Bastoni\n...'} />
+                </div>
+              </div>
+
+              <div className="assign-controls">
+                <span className="yt-title">Fotogramma: {assignTime}s</span>
+                <input type="range" min="0" max={Math.round(detail.duration_s || 0)} value={assignTime}
+                  onChange={(e) => setAssignTime(Number(e.target.value))}
+                  onMouseUp={() => { loadTracksAt(assignTime); seekVideo(assignTime, false); }} />
+                <button className="download-link" onClick={() => loadTracksAt(assignTime)}>Mostra giocatori</button>
+              </div>
+
+              <div className="assign-grid">
+                <img className="snap-img" src={`${SERVER}/api/v1/analyses/${selectedId}/snapshot?t=${assignTime}`} alt="campo numerato" />
+                <div className="assign-list">
+                  {tracksAtT.map((tr) => (
+                    <div className="assign-item" key={tr.track_db_id}>
+                      <span className={`assign-tag team-${tr.team}`}>#{tr.track_id}</span>
+                      <select defaultValue="" onChange={(e) => assignTrack(tr.track_db_id, e.target.value)}>
+                        <option value="">— assegna giocatore —</option>
+                        {rosterPlayers.filter((p) => !tr.team || p.team === tr.team).map((p) => (
+                          <option key={p.id} value={JSON.stringify({ name: p.name, number: p.number, role: p.role, team: p.team })}>
+                            {p.number ? `#${p.number} ` : ''}{p.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
+                  {!tracksAtT.length && <p className="muted">Scegli un secondo col cursore e premi "Mostra giocatori". I numeri sul campo = Track ID.</p>}
+                </div>
+              </div>
+            </section>
 
             <section className="main-grid">
               <div className="pitch-panel">

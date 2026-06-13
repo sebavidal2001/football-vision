@@ -948,3 +948,25 @@ input:focus, select:focus, textarea:focus { border-color: var(--lime); }
 }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+
+/* --- Distinta & assegnazione identità --- */
+.roster-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+.roster-area {
+  width: 100%; min-height: 150px; resize: vertical;
+  padding: 8px 10px; border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.12); background: rgba(0,0,0,0.25);
+  color: #e8eef5; font-size: 0.85rem; font-family: monospace;
+}
+.assign-controls { display: flex; align-items: center; gap: 12px; margin: 8px 0 14px; }
+.assign-controls input[type=range] { flex: 1; }
+.assign-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; align-items: start; }
+.snap-img { width: 100%; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); }
+.assign-list { display: flex; flex-direction: column; gap: 6px; max-height: 520px; overflow-y: auto; }
+.assign-item { display: flex; align-items: center; gap: 8px; }
+.assign-item select {
+  flex: 1; padding: 6px 8px; border-radius: 7px;
+  border: 1px solid rgba(255,255,255,0.12); background: rgba(0,0,0,0.25); color: #e8eef5; font-size: 0.82rem;
+}
+.assign-tag { min-width: 48px; font-weight: 700; font-size: 0.82rem; text-align: center; padding: 4px 6px; border-radius: 6px; }
+.assign-tag.team-1 { background: rgba(31,111,255,0.25); color: #8ec5ff; }
+.assign-tag.team-2 { background: rgba(255,59,59,0.25); color: #ff9b8e; }
