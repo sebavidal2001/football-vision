@@ -32,6 +32,7 @@ DB_PATH = DATA_DIR / "scout_lab.db"
 RADAR_SCRIPT = ROOT / "vista_tattica" / "genera_radar_auto.py"
 STATS_SCRIPT = ROOT / "analisi" / "stats_giocatori.py"
 METRICS_SCRIPT = ROOT / "analisi" / "metriche_avanzate.py"
+DASH_SCRIPT = ROOT / "analisi" / "confronto_giocatori.py"
 REPORT_SCRIPT = ROOT / "analisi" / "report_pdf.py"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -1140,6 +1141,7 @@ def analyze_video(video: Path, salto: int, ogni_campo: int, no_video: bool, use_
         run_command([sys.executable, str(RADAR_SCRIPT), str(video), "--salto", str(salto),
                      "--ogni_campo", str(ogni_campo), "--imgsz", "1280"] + (["--no_video"] if no_video else []), add)
     run_command([sys.executable, str(STATS_SCRIPT), str(csv_path), "--min_rilevazioni", "12"], add)
+    run_command([sys.executable, str(DASH_SCRIPT), str(OUTPUT_DIR / f"STATISTICHE_{base}.csv")], add)
     run_command([sys.executable, str(METRICS_SCRIPT), str(csv_path), "--min_rilevazioni", "12"], add)
     run_command([sys.executable, str(REPORT_SCRIPT), base, "--dir", str(OUTPUT_DIR)], add)
     sync_outputs()
