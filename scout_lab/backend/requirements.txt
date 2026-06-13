@@ -3,5 +3,6 @@ uvicorn[standard]>=0.30
 python-multipart>=0.0.9
 pydantic>=2.7
 numpy>=1.26
+yt-dlp>=2024.0
 runpod>=1.6
 paramiko>=3.4

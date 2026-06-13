@@ -907,3 +907,27 @@ input:focus, select:focus, textarea:focus { border-color: var(--lime); }
   color: #9fb3c8;
   text-align: center;
 }
+
+/* --- Form YouTube (download + ritaglio integrati) --- */
+.yt-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  margin: 4px 0;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+}
+.yt-title { margin: 0; font-size: 0.78rem; color: #9fb3c8; }
+.yt-input {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.25);
+  color: #e8eef5;
+  font-size: 0.85rem;
+}
+.yt-times { display: flex; gap: 8px; }
+.yt-times .yt-input { width: 50%; }

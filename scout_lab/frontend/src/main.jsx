@@ -100,6 +100,9 @@ function App() {
   const [query, setQuery] = useState('');
   const [uploadedClip, setUploadedClip] = useState('');
   const [useRunpod, setUseRunpod] = useState(false);
+  const [ytUrl, setYtUrl] = useState('');
+  const [ytStart, setYtStart] = useState('00:00:00');
+  const [ytEnd, setYtEnd] = useState('00:01:00');
   const [job, setJob] = useState(null);
   const [selectedTrackIds, setSelectedTrackIds] = useState(new Set());
   const [reviewMode, setReviewMode] = useState('reviewable');
@@ -321,6 +324,31 @@ function App() {
     }
   }
 
+  async function startYoutubeJob() {
+    if (!ytUrl) {
+      setNotice('Incolla un link YouTube.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const data = await api('/jobs/youtube', {
+        method: 'POST',
+        body: JSON.stringify({
+          url: ytUrl,
+          inizio: ytStart || '00:00:00',
+          fine: ytEnd || '00:01:00',
+          use_runpod: useRunpod,
+        }),
+      });
+      setJob(data);
+      setNotice('Scarico da YouTube e poi analizzo. Segui lo stato del job qui sotto.');
+    } catch (e) {
+      setNotice(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   useEffect(() => {
     if (!job || !['queued', 'running'].includes(job.status)) return;
     const timer = setInterval(async () => {
@@ -515,6 +543,19 @@ function App() {
           <span>Carica clip</span>
           <input type="file" accept="video/*" onChange={uploadClip} />
         </label>
+
+        <div className="yt-form">
+          <p className="yt-title">Da YouTube (link + ore:minuti:secondi)</p>
+          <input className="yt-input" placeholder="https://youtu.be/..." value={ytUrl} onChange={(e) => setYtUrl(e.target.value)} />
+          <div className="yt-times">
+            <input className="yt-input" placeholder="da  00:28:00" value={ytStart} onChange={(e) => setYtStart(e.target.value)} />
+            <input className="yt-input" placeholder="a  00:32:00" value={ytEnd} onChange={(e) => setYtEnd(e.target.value)} />
+          </div>
+          <button className="ghost-button" onClick={startYoutubeJob} disabled={busy || !ytUrl}>
+            <Download size={16} />
+            Scarica e analizza
+          </button>
+        </div>
 
         <label className="ghost-upload">
           <Download size={17} />

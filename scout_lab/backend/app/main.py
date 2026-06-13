@@ -91,6 +91,18 @@ class LocalRunRequest(BaseModel):
     use_runpod: bool = False   # esegue il passo GPU su un pod RunPod invece che in locale
 
 
+class YoutubeRequest(BaseModel):
+    url: str
+    inizio: str = "00:00:00"   # ore:minuti:secondi
+    fine: str = "00:01:00"
+    max_height: int = 720
+    salto: int = 3
+    ogni_campo: int = 2
+    no_video: bool = True
+    use_runpod: bool = True     # default: scarica in locale, analizza su RunPod
+    analyze: bool = True        # se False, scarica soltanto
+
+
 class ProfileUpsert(BaseModel):
     analysis_id: int
     track_db_ids: list[int]
@@ -1107,47 +1119,115 @@ async def import_colab_zip(file: UploadFile = File(...)) -> dict[str, Any]:
     return {"extracted": extracted, "sync": sync, "message": "Output Colab importato e sincronizzato."}
 
 
+def run_command(command: list[str], add) -> None:
+    add("> " + " ".join(str(c) for c in command))
+    proc = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    add((proc.stdout or "")[-3000:])
+    if proc.returncode != 0:
+        add((proc.stderr or "")[-2000:])
+        raise RuntimeError(f"Comando fallito: {command[1] if len(command) > 1 else command[0]}")
+
+
+def analyze_video(video: Path, salto: int, ogni_campo: int, no_video: bool, use_runpod: bool, add) -> None:
+    """Pipeline completa su un video: passo GPU (RunPod o locale) + stats/metriche/report."""
+    base = video.stem
+    csv_path = OUTPUT_DIR / f"POSIZIONIAUTO_{base}.csv"
+    if use_runpod:
+        from .runpod_worker import run_remote
+        add("== Passo GPU su RunPod ==")
+        run_remote(str(video), salto=salto, ogni_campo=ogni_campo, out_dir=str(OUTPUT_DIR), log=add)
+    else:
+        run_command([sys.executable, str(RADAR_SCRIPT), str(video), "--salto", str(salto),
+                     "--ogni_campo", str(ogni_campo), "--imgsz", "1280"] + (["--no_video"] if no_video else []), add)
+    run_command([sys.executable, str(STATS_SCRIPT), str(csv_path), "--min_rilevazioni", "12"], add)
+    run_command([sys.executable, str(METRICS_SCRIPT), str(csv_path), "--min_rilevazioni", "12"], add)
+    run_command([sys.executable, str(REPORT_SCRIPT), base, "--dir", str(OUTPUT_DIR)], add)
+    sync_outputs()
+
+
+def normalizza_tempo(t: str) -> str:
+    """Accetta '90', '1:30', '01:30', '1:02:03' -> 'HH:MM:SS'."""
+    t = (t or "").strip()
+    if not t:
+        return "00:00:00"
+    if t.isdigit():
+        s = int(t)
+        return f"{s//3600:02d}:{(s%3600)//60:02d}:{s%60:02d}"
+    parti = [int(p) for p in t.split(":") if p.isdigit()]
+    while len(parti) < 3:
+        parti.insert(0, 0)
+    return f"{parti[-3]:02d}:{parti[-2]:02d}:{parti[-1]:02d}"
+
+
+def _yt_id(url: str) -> str:
+    import re
+    m = re.search(r"(?:v=|youtu\.be/|/shorts/|/embed/)([A-Za-z0-9_-]{6,})", url or "")
+    return m.group(1) if m else "clip"
+
+
+def download_youtube(url: str, inizio: str, fine: str, max_height: int, add) -> Path:
+    """Scarica uno spezzone YouTube in H.264 (no AV1) dentro clips_input/ e ritorna il path."""
+    inizio, fine = normalizza_tempo(inizio), normalizza_tempo(fine)
+    base = f"yt_{_yt_id(url)}_{inizio.replace(':', '')}-{fine.replace(':', '')}"
+    dl = CLIPS_DIR / f"{base}_dl.mp4"
+    out = CLIPS_DIR / f"{base}.mp4"
+    add(f"▶ Scarico {inizio}-{fine} da YouTube (max {max_height}p)...")
+    cmd = [sys.executable, "-m", "yt_dlp",
+           "--download-sections", f"*{inizio}-{fine}",
+           "-f", f"bestvideo[height<={max_height}][vcodec^=avc1]+bestaudio/"
+                 f"best[height<={max_height}][vcodec^=avc1]/bestvideo[height<={max_height}]+bestaudio/best[height<={max_height}]",
+           "--merge-output-format", "mp4", "--restrict-filenames", "-o", str(dl), url]
+    if shutil.which("node"):
+        cmd[2:2] = ["--js-runtimes", "node"]   # 720p a piena velocità
+    run_command(cmd, add)
+    if not dl.exists():
+        raise RuntimeError("Download YouTube fallito (controlla il link o l'intervallo).")
+    # normalizza in H.264 compatibile (copia veloce se già avc1, altrimenti riconverte)
+    codec = video_codec(dl)
+    add(f"   normalizzo (codec {codec or '?'})...")
+    if codec in {"h264", "avc1"}:
+        run_command(["ffmpeg", "-y", "-i", str(dl), "-c", "copy", "-an", str(out)], add)
+    else:
+        run_command(["ffmpeg", "-y", "-i", str(dl), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", str(out)], add)
+    dl.unlink(missing_ok=True)
+    add(f"✅ Clip pronta: {out.name}")
+    return out
+
+
 def run_job(job_id: str, req: LocalRunRequest) -> None:
     JOBS[job_id]["status"] = "running"
-    video = CLIPS_DIR / req.filename
-    if not video.exists():
-        JOBS[job_id].update(status="failed", error="Clip non trovata")
-        return
-    base = video.stem
     log: list[str] = []
 
     def add(msg: str) -> None:
         log.append(msg)
         JOBS[job_id]["log"] = "\n".join(log)
 
-    def run_local(command: list[str]) -> None:
-        add("> " + " ".join(command))
-        proc = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
-        add((proc.stdout or "")[-3000:])
-        if proc.returncode != 0:
-            add((proc.stderr or "")[-3000:])
-            raise RuntimeError(f"Comando fallito: {command[1] if len(command) > 1 else command[0]}")
-
-    csv_path = OUTPUT_DIR / f"POSIZIONIAUTO_{base}.csv"
+    video = CLIPS_DIR / req.filename
+    if not video.exists():
+        JOBS[job_id].update(status="failed", error="Clip non trovata")
+        return
     try:
-        # 1) passo GPU (rilevamento) — su RunPod oppure in locale
-        if req.use_runpod:
-            from .runpod_worker import run_remote
-            add("== Passo GPU su RunPod ==")
-            run_remote(str(video), salto=req.salto, ogni_campo=req.ogni_campo,
-                       out_dir=str(OUTPUT_DIR), log=add)
-        else:
-            run_local([sys.executable, str(RADAR_SCRIPT), str(video), "--salto", str(req.salto),
-                       "--ogni_campo", str(req.ogni_campo), "--imgsz", "1280"]
-                      + (["--no_video"] if req.no_video else []))
-
-        # 2-4) passi leggeri SEMPRE in locale (sul CSV prodotto)
-        run_local([sys.executable, str(STATS_SCRIPT), str(csv_path), "--min_rilevazioni", "12"])
-        run_local([sys.executable, str(METRICS_SCRIPT), str(csv_path), "--min_rilevazioni", "12"])
-        run_local([sys.executable, str(REPORT_SCRIPT), base, "--dir", str(OUTPUT_DIR)])
-
-        sync_outputs()
+        analyze_video(video, req.salto, req.ogni_campo, req.no_video, req.use_runpod, add)
         JOBS[job_id].update(status="done", log="\n".join(log))
+    except Exception as exc:
+        JOBS[job_id].update(status="failed", error=str(exc), log="\n".join(log))
+
+
+def run_youtube_job(job_id: str, req: "YoutubeRequest") -> None:
+    JOBS[job_id]["status"] = "running"
+    log: list[str] = []
+
+    def add(msg: str) -> None:
+        log.append(msg)
+        JOBS[job_id]["log"] = "\n".join(log)
+
+    try:
+        video = download_youtube(req.url, req.inizio, req.fine, req.max_height, add)
+        if req.analyze:
+            analyze_video(video, req.salto, req.ogni_campo, req.no_video, req.use_runpod, add)
+        else:
+            sync_outputs()
+        JOBS[job_id].update(status="done", filename=video.name, log="\n".join(log))
     except Exception as exc:
         JOBS[job_id].update(status="failed", error=str(exc), log="\n".join(log))
 
@@ -1157,6 +1237,14 @@ def start_local_analysis(req: LocalRunRequest) -> dict[str, Any]:
     job_id = str(int(time.time() * 1000))
     JOBS[job_id] = {"id": job_id, "status": "queued", "created_at": now_iso()}
     threading.Thread(target=run_job, args=(job_id, req), daemon=True).start()
+    return JOBS[job_id]
+
+
+@app.post("/api/v1/jobs/youtube")
+def start_youtube(req: YoutubeRequest) -> dict[str, Any]:
+    job_id = str(int(time.time() * 1000))
+    JOBS[job_id] = {"id": job_id, "status": "queued", "created_at": now_iso()}
+    threading.Thread(target=run_youtube_job, args=(job_id, req), daemon=True).start()
     return JOBS[job_id]
 
 
