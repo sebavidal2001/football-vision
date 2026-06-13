@@ -1178,7 +1178,7 @@ def download_youtube(url: str, inizio: str, fine: str, max_height: int, add) -> 
                  f"best[height<={max_height}][vcodec^=avc1]/bestvideo[height<={max_height}]+bestaudio/best[height<={max_height}]",
            "--merge-output-format", "mp4", "--restrict-filenames", "-o", str(dl), url]
     if shutil.which("node"):
-        cmd[2:2] = ["--js-runtimes", "node"]   # 720p a piena velocità
+        cmd[3:3] = ["--js-runtimes", "node"]   # dopo 'yt_dlp': 720p a piena velocità
     run_command(cmd, add)
     if not dl.exists():
         raise RuntimeError("Download YouTube fallito (controlla il link o l'intervallo).")
